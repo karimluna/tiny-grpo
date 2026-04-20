@@ -5,7 +5,7 @@ The smallest faithful GRPO loop, applied to web traffic routing, in ~200 lines o
 ### What is GRPO?
 __Group Relative Policy Optimization__ (GRPO) is a reinforcement learning algorithm that improves a policy by comparing outcomes within a group rather than against an external value function.
 
-Different from PPO we don't need a critic because we are evaluating a new action relative to other actions that we tried.
+Different from PPO we don't need a critc because we are evaluating a new action relative to other actions that we tried.
 
 ```python
 # pseudocode
@@ -16,17 +16,17 @@ mean_r = sum(rewards) / K                   # group mean
 
 for a, r in zip(actions, rewards):
     A = r - mean_r
-    w[s][a] += lr * A * grad_log_pi(a, s)   # update policy
+    w[a] += lr * A * grad_log_pi(a, x)      # update policy weights
 ```
 
-So actions better than the group mean get reinforced. Worse actions get supressed and we use the group mean as the baseline in this context this means no separate value network needed.
+Actions better than the group mean get reinforced. Worse actions get suppressed. The group mean serves as the baseline, no separate value network needed.
 
 ### Architecture
 ```mermaid
 flowchart LR
     Req[Incoming Request] --> Obs[Observe Metrics]
-    Obs --> S[State Key s]
-    S --> Pi{Policy π}
+    Obs --> X[Feature Vector x]
+    X --> Pi{Policy π}
 
     Pi -->|Sample K=2| Act[a₁, a₂]
 
@@ -41,10 +41,48 @@ flowchart LR
     Adv -->|Update weights w| Pi
 ```
 
-### Convergence
-The tabular softmax policy with GRPO updates converges because i) advantage centering: eliminates baseline variance so only relative quality matters ii) softmax: ensures $\pi(a|s) > 0$ always $\rightarrow$ perpetual exploration prevents collapse and iii) clipping: bounds update magnitude $\rightarrow$ no single observation destabilizes the policy
+### Policy: Linear Model
 
-With $K=2$, each step provides one pairwise comparison. Over many requests, the policy converges to the optimal server for each observed state. With a constant learning rate, the policy oscillates around the optimum, exactly what you want for a system that must adapt to shifting conditions.
+Instead of a lookup table keyed on bucketed state strings, the policy is a **linear model**: each action has a weight vector `w[a]` of the same dimension as the feature vector `x`, and the logit for action `a` is just their dot product:
+
+$$\text{logit} = w[a] \cdot x, \quad \pi(a|x) = \text{softmax}(\text{logits})[a]$$
+
+
+The feature vector is built directly from raw metrics, normalized to `[0, 1]`:
+
+```go
+x = [load, latencyMs/300, errorRate/0.10, queueMs/500]
+```
+
+This is an action space of 4 actions × 4 features = **16**
+
+#### Why not a table?
+
+A tabular policy buckets continuous metrics into discrete bins and uses the bin label as a lookup key. This loses magnitude information: a latency of 101ms and 299ms map to the same state and each new state combination starts learning from scratch with no transfer between nearby states.
+
+The linear model sees the actual metric values, so it generalizes continuously: a policy that learned to avoid high-latency servers at `latencyMs=200` already has a sensible prior at `latencyMs=250`.
+
+#### Gradients are analytic
+
+For a linear-softmax model the policy gradient has a closed form, so no autograd is needed:
+
+$$\frac{\partial \log \pi(a|x)}{\partial w[a'][f]} = \left(\mathbf{1}[a' = a] - \pi(a'|x)\right) \cdot x_f$$
+
+The update rule per step is:
+
+$$w[a][f] \mathrel{+}= \alpha \cdot A \cdot \left(\mathbf{1}[a = \text{chosen}] - \pi(a|x)\right) \cdot x_f$$
+
+where $A = r - \bar{r}$ is the GRPO advantage. Because the features are bounded in `[0, 1]` and the learning rate is small, weights stay bounded naturally — no gradient clipping or weight clamping required.
+
+### Convergence
+
+The linear softmax policy with GRPO updates converges because:
+
+1. **Advantage centering**: eliminates baseline variance so only relative quality matters.
+2. **Softmax**: ensures $\pi(a|x) > 0$ always, so exploration never collapses.
+3. **Bounded features**: with $x \in [0,1]^d$ and a small learning rate, weights and logits stay bounded without explicit clamping.
+
+With $K=2$, each step provides one pairwise comparison. Over many requests, the policy converges to the optimal server for the current metric regime. With a constant learning rate it oscillates around the optimum, exactly what you want for a system that must adapt to shifting conditions.
 
 ## Go + GRPO for Routing
 
@@ -54,16 +92,13 @@ With $K=2$, each step provides one pairwise comparison. Over many requests, the 
 | On-policy | Adapts to current traffic, not last week's |
 | Group-relative advantages | Robust to reward scale and noise |
 | K=2 is sufficient | Minimal overhead per routing decision |
-
-So Go seems like a natural fit.
+| Linear model | 16 floats of state, analytic gradients, no bucketing |
 
 ### Reward Function
 
-The formula for the reward function is
+$$R = -(l_{ms} + \alpha \cdot e_r \cdot 1000 + \beta \cdot q_{ms})$$
 
-$$R = -(l(ms) + \alpha \cdot e_r \cdot 1000 + \beta \cdot q(ms))$$
-
-where $l(ms), e_r$ and $q(ms)$ are the latency, error rate and queue respectively and $(\alpha, \beta)$ are weight constants that control the tradeoff.
+where $l_{ms}$, $e_r$ and $q_{ms}$ are latency, error rate and queue depth respectively, and $(\alpha, \beta)$ are weight constants that control the tradeoff.
 
 ## Quick Start
 
@@ -76,32 +111,29 @@ go run .
 ## Example Output
 
 ```
-╔══════════════════════════════════════╗
-║   Tiny GRPO Load Balancer (Go)       ║
-╚══════════════════════════════════════╝
-backends=4  K=2  lr=0.02  α=2.0  β=0.5
+╔════════════════════════════════════════════════╗
+║            Tiny GRPO Load Balancer             ║
+╚════════════════════════════════════════════════╝
+servers=4  K=2  lr=0.01  ε=0.10  α=1.5  β=0.3
 
-Step  500 | π=[0.58 0.22 0.11 0.09] routes=[59% 21% 12% 8%]  avgR=-35.2 state=001
-Step 1000 | π=[0.71 0.17 0.07 0.05] routes=[68% 18% 8% 6%]   avgR=-29.8 state=001
+Step  500 | π=[87.8%  4.1%  4.1%  4.1%] avgR= -45.3 | load=0.05 lat=0.10 err=0.01 q=0.00
 
-Server 0 degraded  (lat 20 -> 180ms, err 0.1%->6%)
+  Server 0 degraded  (lat 20→180ms, err 0.1%→6%)
 
-Step 1500 | π=[0.12 0.45 0.22 0.21] routes=[46% 27% 12% 15%] avgR=-48.1 state=011
-Step 2000 | π=[0.04 0.52 0.19 0.25] routes=[33% 31% 13% 23%] avgR=-52.3 state=011
+Step 1000 | π=[25.0% 26.5% 23.5% 25.0%] avgR= -45.3 | load=0.08 lat=0.62 err=0.61 q=0.00
+Step 1500 | π=[ 4.1% 87.8%  4.1%  4.1%] avgR= -76.9 | load=0.06 lat=0.61 err=0.60 q=0.00
 
-Server 0 recovered (lat -> 20ms, err->0.1%)
+  Server 0 recovered (lat→20ms, err→0.1%)
 
-Step 2500 | π=[0.31 0.34 0.17 0.18] routes=[38% 30% 13% 19%] avgR=-44.1 state=001
-Step 3000 | π=[0.62 0.20 0.10 0.08] routes=[46% 28% 13% 13%] avgR=-37.6 state=001
+Step 2000 | π=[87.8%  4.1%  4.1%  4.1%] avgR= -80.2 | load=0.04 lat=0.09 err=0.01 q=0.00
+Step 2500 | π=[87.8%  4.1%  4.1%  4.1%] avgR= -46.8 | load=0.03 lat=0.09 err=0.01 q=0.00
+Step 3000 | π=[87.8%  4.1%  4.1%  4.1%] avgR= -47.3 | load=0.03 lat=0.08 err=0.01 q=0.00
 
-┌──────────────────────────────────────────────────────────┐
-│ Final Policy                                             │
-├──────────────────────────────────────────────────────────┤
-│ Server 0: 62.0% ██████████████████░░░░░░░░░░░░░░░░░░░░░ │
-│ Server 1: 20.0% █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
-│ Server 2: 10.0% ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
-│ Server 3:  8.0% █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
-└──────────────────────────────────────────────────────────┘
+Final Policy:
+  Server 0:  87.8% ██████████████████████████░░░░
+  Server 1:   4.1% █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  Server 2:   4.1% █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  Server 3:   4.1% █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
 ```
 
 The policy:
@@ -109,8 +141,7 @@ The policy:
 2. **Adapts** when Server 0 degrades (steps 1000–2000)
 3. **Re-learns** when Server 0 recovers (steps 2000–3000)
 
-Notice the state key changes from `001` -> `011` when Server 0 degrades (average latency crosses the 100ms bucket threshold). The policy starts fresh for the new state, this is tabular learning, not transfer. It re-discovers the best server from scratch, which is exactly what we want when conditions shift.
-
+The state is now a continuous feature vector rather than a discrete bucket label, so the policy degrades and recovers smoothly as metric values shift — there is no discrete threshold to cross before re-learning begins.
 
 ## Further Work
 
@@ -118,23 +149,23 @@ For this tiny version goroutines would add complexity, because the GRPO loop is 
 
 Also because we are not doing I/O there's no network call, no disk read. The "observe" step just reads in-memory structs.
 
-But they are really easy toadd, if this were turned into a real HTTP reverse proxy, we'd have a goroutine per incoming request, using a gate (`sync.Mutex`) around the policy update would be enough, for example:
+But they are easy to add. If this were turned into a real HTTP reverse proxy, we'd have a goroutine per incoming request, using a `sync.Mutex` around the policy update would be enough:
 
 ```go
 func (rt *Router) Route() int {
     rt.mu.Lock()
-    state := rt.aggregateState()
-    a1 := rt.policy.Sample(state)
-    a2 := rt.policy.Sample(state)
+    x := rt.aggregateFeatures()
+    a1, a2 := rt.policy.SamplePair(x)
     rt.mu.Unlock()
 
     // Route to a1, observe r1 and r2 concurrently
     r1 := observe(a1)
     r2 := observe(a2)
 
+    mean := (r1 + r2) / 2.0
     rt.mu.Lock()
-    rt.policy.GRPOUpdate(state, a1, r1-mean)
-    rt.policy.GRPOUpdate(state, a2, r2-mean)
+    rt.policy.GRPOUpdate(x, a1, r1-mean)
+    rt.policy.GRPOUpdate(x, a2, r2-mean)
     rt.mu.Unlock()
 
     return a1
