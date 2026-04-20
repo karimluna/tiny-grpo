@@ -43,7 +43,7 @@ flowchart LR
 
 ### Policy: Linear Model
 
-Instead of a lookup table keyed on bucketed state strings, the policy is a **linear model**: each action has a weight vector `w[a]` of the same dimension as the feature vector `x`, and the logit for action `a` is just their dot product:
+Instead of a lookup table keyed on (typed) state strings, the policy is a **linear model**: each action has a weight vector `w[a]` of the same dimension as the feature vector `x`, and the logit for action `a` is just their dot product:
 
 $$\text{logit} = w[a] \cdot x, \quad \pi(a|x) = \text{softmax}(\text{logits})[a]$$
 
@@ -56,12 +56,6 @@ x = [load, latencyMs/300, errorRate/0.10, queueMs/500]
 
 This is an action space of 4 actions × 4 features = **16**
 
-#### Why not a table?
-
-A tabular policy buckets continuous metrics into discrete bins and uses the bin label as a lookup key. This loses magnitude information: a latency of 101ms and 299ms map to the same state and each new state combination starts learning from scratch with no transfer between nearby states.
-
-The linear model sees the actual metric values, so it generalizes continuously: a policy that learned to avoid high-latency servers at `latencyMs=200` already has a sensible prior at `latencyMs=250`.
-
 #### Gradients are analytic
 
 For a linear-softmax model the policy gradient has a closed form, so no autograd is needed:
@@ -72,7 +66,7 @@ The update rule per step is:
 
 $$w[a][f] \mathrel{+}= \alpha \cdot A \cdot \left(\mathbf{1}[a = \text{chosen}] - \pi(a|x)\right) \cdot x_f$$
 
-where $A = r - \bar{r}$ is the GRPO advantage. Because the features are bounded in `[0, 1]` and the learning rate is small, weights stay bounded naturally — no gradient clipping or weight clamping required.
+where $A = r - \bar{r}$ is the GRPO advantage. Because the features are bounded in `[0, 1]` and the learning rate is small, weights stay bounded naturally this means no gradient clipping or weight clamping required.
 
 ### Convergence
 
@@ -103,7 +97,7 @@ where $l_{ms}$, $e_r$ and $q_{ms}$ are latency, error rate and queue depth respe
 ## Quick Start
 
 ```bash
-git clone https://github.com/you/tiny-grpo.git
+git clone https://github.com/<you>/tiny-grpo.git
 cd tiny-grpo
 go run .
 ```
@@ -141,11 +135,11 @@ The policy:
 2. **Adapts** when Server 0 degrades (steps 1000–2000)
 3. **Re-learns** when Server 0 recovers (steps 2000–3000)
 
-The state is now a continuous feature vector rather than a discrete bucket label, so the policy degrades and recovers smoothly as metric values shift — there is no discrete threshold to cross before re-learning begins.
+The policy degrades and recovers smoothly as metric values shift.
 
 ## Further Work
 
-For this tiny version goroutines would add complexity, because the GRPO loop is sequential (sample, observe, update). Each step depends on the previous one within a single routing decision.
+For this tiny version goroutines would add complexity, because the GRPO loop is sequential (sample, observe, update). Each step depends on the previous one within a single routing decision. 
 
 Also because we are not doing I/O there's no network call, no disk read. The "observe" step just reads in-memory structs.
 
