@@ -1,6 +1,6 @@
 ## Tiny GRPO for Traffic Routing
 
-The smallest faithful GRPO loop, applied to web traffic routing, in ~200 lines of Go.
+The smallest faithful GRPO loop, applied to web traffic routing, in ~300 lines of Go.
 
 ### What is GRPO?
 __Group Relative Policy Optimization__ (GRPO) is a reinforcement learning algorithm that improves a policy by comparing outcomes within a group rather than against an external value function.
@@ -22,24 +22,11 @@ for a, r in zip(actions, rewards):
 Actions better than the group mean get reinforced. Worse actions get suppressed. The group mean serves as the baseline, no separate value network needed.
 
 ### Architecture
-```mermaid
-flowchart LR
-    Req[Incoming Request] --> Obs[Observe Metrics]
-    Obs --> X[Feature Vector x]
-    X --> Pi{Policy π}
+I see a lot of potential in this algorithm which was originally created for LLM optimization (see [DeepSeekMath](https://arxiv.org/abs/2402.03300)) for control the control of systems, the architecture in this tiny project is as follows:
 
-    Pi -->|Sample K=2| Act[a₁, a₂]
-
-    Act -->|Execute| Srv((Server a₁))
-    Srv --> R1[Real Reward r₁]
-
-    Act -->|Estimate| R2[Estimated Reward r₂]
-
-    R1 --> Adv[Advantage Aᵢ = rᵢ - μ]
-    R2 --> Adv
-
-    Adv -->|Update weights w| Pi
-```
+<p align="center">
+  <img src="tiny-grpo.png" height="350" alt="Architecture diagram">
+</p>
 
 ### Policy: Linear Model
 
