@@ -41,7 +41,7 @@ The feature vector is built directly from raw metrics, normalized to `[0, 1]`:
 x = [load, latencyMs/300, errorRate/0.10, queueMs/500]
 ```
 
-This is an action space of 4 actions × 4 features = **16**
+This is result in 4 actions × 4 features = **16** state-action pairs.
 
 #### Gradients are analytic
 
