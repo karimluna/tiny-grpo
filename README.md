@@ -22,7 +22,7 @@ for a, r in zip(actions, rewards):
 Actions better than the group mean get reinforced. Worse actions get suppressed. The group mean serves as the baseline, no separate value network needed.
 
 ### Architecture
-I see a lot of potential in this algorithm which was originally created for LLM optimization (see [DeepSeekMath](https://arxiv.org/abs/2402.03300)) for control the control of systems, the architecture in this tiny project is as follows:
+I see a lot of potential in this algorithm which was originally created for LLM optimization (see [DeepSeekMath](https://arxiv.org/abs/2402.03300)) for control of systems, the architecture in this tiny project is as follows:
 
 <p align="center">
   <img src="tiny-grpo.png" height="350" alt="Architecture diagram">
