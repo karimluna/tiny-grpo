@@ -134,7 +134,7 @@ func (p *Policy) SamplePair(x []float64) (int, int) {
 //
 // The gradient of the expected reward w.r.t. w[a][f] is:
 //
-//	∂/∂w[a][f] = adv · (1{a==chosen} - π(a)) · x[f]
+// \frac{\partial}{\partial w[a][f]} = adv \cdot (1{a==chosen} - \pi(a)) \cdot x[f]
 func (p *Policy) GRPOUpdate(x []float64, action int, advantage float64) {
 	pr := softmax(p.logits(x)) // use raw softmax, not eps-mixed, for gradient
 	for a := 0; a < p.nActions; a++ {
